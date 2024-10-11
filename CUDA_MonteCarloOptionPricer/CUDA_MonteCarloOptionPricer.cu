@@ -1,33 +1,27 @@
 ﻿#include "CUDA_MonteCarloOptionPricer.h"
-
 #include <iostream>
-
-// CUDA runtime
 #include <cuda_runtime.h>
 #include <cuda_profiler_api.h>
-
-// Helper functions and utilities to work with CUDA
-//#include <helper_functions.h>
-//#include <helper_cuda.h>
-
+#include <curand_kernel.h>
 #include <device_launch_parameters.h>
-#include <curand_kernel.h>  // CUDA Random number generator
-
 
 using namespace std;
 
-// CUDA kernel for generating random asset price paths and calculating payoff
-__global__ void monte_carlo_kernel(float* d_results, float S0, float K, float r, float sigma, float T, int num_steps, int num_simulations) {
+// Kernel to initialize random states
+__global__ void init_random_states(curandState* states, int seed, int num_simulations) {
     int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if (idx >= num_simulations) return;
+    curand_init(seed, idx, 0, &states[idx]);
+}
 
-    if (idx >= num_simulations) return;  // Make sure we don't go out of bounds
+// CUDA kernel for generating random asset price paths and calculating payoff
+__global__ void monte_carlo_kernel(curandState* states, float* d_results, float S0, float K, float r, float sigma, float T, int num_steps, int num_simulations) {
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if (idx >= num_simulations) return;
 
-    // Initialize the random number generator
-    curandState state;
-    curand_init(1234, idx, 0, &state);  // Seed, sequence number, and offset
-
-    float dt = T / num_steps;  // Time step
-    float S = S0;  // Initial price
+    curandState state = states[idx];  // Load random state
+    float dt = T / num_steps;         // Time step
+    float S = S0;                     // Initial price
 
     // Simulate the price path
     for (int step = 0; step < num_steps; ++step) {
@@ -35,24 +29,29 @@ __global__ void monte_carlo_kernel(float* d_results, float S0, float K, float r,
         S = S * expf((r - 0.5f * sigma * sigma) * dt + sigma * sqrtf(dt) * Z);
     }
 
-    // Calculate the payoff for a European call option
     d_results[idx] = fmaxf(S - K, 0.0f);  // Call option payoff
+    states[idx] = state;  // Save state back
 }
 
-// Host function to set up and run the Monte Carlo simulation on the GPU
-float monte_carlo_cuda(int num_simulations, int num_steps, float S0, float K, float r, float sigma, float T) {
-    // Allocate memory for results on the device
-    float* d_results;
-    cudaMalloc(&d_results, num_simulations * sizeof(float));
+// Function to run the Monte Carlo simulation on a specific GPU
+void monte_carlo_cuda(int gpu_id, int num_simulations, int num_steps, float S0, float K, float r, float sigma, float T, float* result) {
+    cudaSetDevice(gpu_id);  // Set the current device to this GPU
 
-    // Define the number of threads and blocks
+    // Allocate memory for results and random states on the device
+    float* d_results;
+    curandState* d_states;
+    cudaMalloc(&d_results, num_simulations * sizeof(float));
+    cudaMalloc(&d_states, num_simulations * sizeof(curandState));
+
+    // Initialize random states
     int block_size = 256;
     int num_blocks = (num_simulations + block_size - 1) / block_size;
+    init_random_states << <num_blocks, block_size >> > (d_states, 1234, num_simulations);
 
-    // Launch the CUDA kernel
-    monte_carlo_kernel << <num_blocks, block_size >> > (d_results, S0, K, r, sigma, T, num_steps, num_simulations);
+    // Launch the Monte Carlo kernel
+    monte_carlo_kernel << <num_blocks, block_size >> > (d_states, d_results, S0, K, r, sigma, T, num_steps, num_simulations);
 
-    // Copy results back to host
+    // Copy results back to the host
     float* h_results = (float*)malloc(num_simulations * sizeof(float));
     cudaMemcpy(h_results, d_results, num_simulations * sizeof(float), cudaMemcpyDeviceToHost);
 
@@ -61,25 +60,25 @@ float monte_carlo_cuda(int num_simulations, int num_steps, float S0, float K, fl
     for (int i = 0; i < num_simulations; ++i) {
         payoff_sum += h_results[i];
     }
-
-    float option_price = (payoff_sum / num_simulations) * expf(-r * T);
+    *result = (payoff_sum / num_simulations) * expf(-r * T);
 
     // Free memory
     cudaFree(d_results);
+    cudaFree(d_states);
     free(h_results);
-
-    return option_price;
 }
 
 int main() {
-    // Option parameters
-    int num_options = 2000;  // Number of options in the portfolio
     int num_gpus;
     cudaGetDeviceCount(&num_gpus);
+    cout << "Number of GPUs: " << num_gpus << endl;
 
-	cout << "Number of GPUs: " << num_gpus << endl;
+    // Option parameters
+    int num_options = 10000;
+    int num_simulations = 1000000;
+    int num_steps = 252;
 
-    // Allocate memory for option parameters on the host
+    // Allocate memory for option parameters
     float* S0 = (float*)malloc(num_options * sizeof(float));
     float* K = (float*)malloc(num_options * sizeof(float));
     float* r = (float*)malloc(num_options * sizeof(float));
@@ -88,38 +87,45 @@ int main() {
 
     // Generate random option parameters
     for (int i = 0; i < num_options; ++i) {
-        S0[i] = 100.0f + i;  // Initial stock price
-        K[i] = 75.0f + i;   // Strike price
-        r[i] = 0.05f + i * 0.001f;    // Risk-free rate
-        sigma[i] = 0.2f + i * 0.001f; // Volatility
-        T[i] = 1.0f;     // Time to maturity
+        S0[i] = 100.0f + i;
+        K[i] = 75.0f + i;
+        r[i] = 0.05f + i * 0.001f;
+        sigma[i] = 0.2f + i * 0.001f;
+        T[i] = 1.0f;
     }
 
-    int num_simulations = 1000000;  // Number of price paths
-    int num_steps = 252;  // Number of time steps (daily steps for 1 year)
-
-    // Allocate memory for results on the host
+    // Allocate memory for results
     float* option_prices = (float*)malloc(num_options * sizeof(float));
 
-    // Run the Monte Carlo simulation for each option in the portfolio
-    for (int i = 0; i < num_options; ++i) {
-        int gpu_id = i % num_gpus;  // Assign each option to a different GPU
-        cudaSetDevice(gpu_id);
-        option_prices[i] = monte_carlo_cuda(num_simulations, num_steps, S0[i], K[i], r[i], sigma[i], T[i]);
+    // Stream array for asynchronous execution
+    cudaStream_t* streams = (cudaStream_t*)malloc(num_gpus * sizeof(cudaStream_t));
+    for (int i = 0; i < num_gpus; ++i) {
+        cudaSetDevice(i);
+        cudaStreamCreate(&streams[i]);
     }
 
-    // Print the results
+    // Launch simulations across multiple GPUs in parallel
+    for (int i = 0; i < num_options; ++i) {
+        int gpu_id = i % num_gpus;
+        monte_carlo_cuda(gpu_id, num_simulations, num_steps, S0[i], K[i], r[i], sigma[i], T[i], &option_prices[i]);
+    }
+
+    // Print results
     for (int i = 0; i < num_options; ++i) {
         std::cout << "Option " << i + 1 << " Price: " << option_prices[i] << std::endl;
     }
 
     // Free memory
+    for (int i = 0; i < num_gpus; ++i) {
+        cudaStreamDestroy(streams[i]);
+    }
     free(S0);
     free(K);
     free(r);
     free(sigma);
     free(T);
     free(option_prices);
+    free(streams);
 
     return 0;
 }
