@@ -6,6 +6,10 @@
 #include <iomanip>
 #include <chrono>
 #include <thread>
+#include <fstream>
+#include <filesystem>
+
+using namespace std;
 
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
@@ -139,7 +143,7 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
     dim3 numBlocks(numOptionsInBatch, (numPaths + blockSize - 1) / blockSize);
 
     // Initialize random states
-    initRandStates << <numBlocks.y, blockSize >> > (d_randStates, time(NULL), numPaths);
+    initRandStates << <numBlocks.y, blockSize >> > (d_randStates, 0, numPaths);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Calculate payoffs
@@ -165,13 +169,25 @@ int main() {
     int numPaths = 10000;
     int batchSize = 10000; // Set batch size to reduce memory usage
     int numDevices;
+    
     CUDA_CHECK(cudaGetDeviceCount(&numDevices));
 
+    std::cout << "Creating " << numOptions << " random barrier options"  << endl;
+
     std::vector<BarrierOption> h_options(numOptions);
-    // Initialize options with some random data (this should be replaced with actual portfolio data)
+    // Generate random data for the batch of options within the specified ranges
     for (int i = 0; i < numOptions; i++) {
-        h_options[i] = { 100.0f, 90.0f + i % 20, 1.0f, 90.0f + i % 20, 0.01f * (i % 21), 0.01f * (i % 20),
-            static_cast<BarrierType>(i % 4), (i % 2 == 0) ? European : American, (i % 2 == 0) ? Call : Put };
+        h_options[i] = {
+            static_cast<float>(rand() % 10000 + 1), // strike
+            static_cast<float>(rand() % 10000 + 1), // barrier
+            1.0f,                                    // maturity
+            static_cast<float>(rand() % 10000 + 1), // spot
+            static_cast<float>(rand() % 1001) / 10000.0f, // rate (0 to 10%)
+            static_cast<float>(rand() % 1001) / 10000.0f, // volatility (0 to 10%)
+            static_cast<BarrierType>(rand() % 4),   // barrierType
+            (rand() % 2 == 0) ? European : American, // exerciseType
+            (rand() % 2 == 0) ? Call : Put          // optionType
+        };
     }
 
     std::vector<float> h_averagePayoffs(numOptions, 0.0f);
@@ -198,28 +214,32 @@ int main() {
     std::chrono::duration<double> elapsed = end - start;
     double optionsPerSecond = numOptions / elapsed.count();
 
-    // Output the calculated price for each individual option
-    int maxDisplay = numOptions > 20 ? 20 : numOptions;
-    std::cout << "\nSummary of Option Parameters and Calculated Prices (First 20):\n";
-    std::cout << std::setw(10) << "Option" << std::setw(10) << "Type" << std::setw(10) << "Strike" << std::setw(10) << "Barrier"
-        << std::setw(10) << "Spot" << std::setw(10) << "Rate" << std::setw(15) << "Volatility" << std::setw(15) << "Exercise Type"
-        << std::setw(15) << "Barrier Type" << std::setw(15) << "Price" << std::endl;
-    for (int i = 0; i < maxDisplay; i++) {
-        std::cout << std::setw(10) << i + 1;
-        std::cout << std::setw(10) << (h_options[i].optionType == Call ? "Call" : "Put");
-        std::cout << std::setw(10) << h_options[i].strike;
-        std::cout << std::setw(10) << h_options[i].barrier;
-        std::cout << std::setw(10) << h_options[i].spot;
-        std::cout << std::setw(10) << h_options[i].rate;
-        std::cout << std::setw(15) << h_options[i].volatility;
-        std::cout << std::setw(15) << (h_options[i].exerciseType == European ? "European" : "American");
-        std::cout << std::setw(15) << (h_options[i].barrierType == DownIn ? "DownIn" : (h_options[i].barrierType == DownOut ? "DownOut" : (h_options[i].barrierType == UpIn ? "UpIn" : "UpOut")));
-        std::cout << std::setw(15) << h_averagePayoffs[i] << std::endl;
-    }
-
     // Output performance summary
-    std::cout << numOptions << " priced in " << elapsed.count() << " seconds" << std::endl;
-    std::cout << "Options per Second: " << optionsPerSecond << "  (" << numPaths << " path each)" << std::endl;
+    std::cout << "Total Time Elapsed: " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "Options Priced per Second: " << optionsPerSecond << "  (" << numPaths << " path each)" << std::endl;
+
+    string tempPath = std::filesystem::temp_directory_path().string();
+    tempPath.append("barriers.csv");
+
+    std::cout << "Creating CSV file: " << tempPath << endl;
+
+    std::ofstream csvFile(tempPath);
+    csvFile << "Strike,Barrier,Maturity,Spot,Rate,Volatility,BarrierType,ExerciseType,OptionType,Price\n";
+    for (int i = 0; i < numOptions; i++) {
+        csvFile << h_options[i].strike << ","
+            << h_options[i].barrier << ","
+            << h_options[i].maturity << ","
+            << h_options[i].spot << ","
+            << h_options[i].rate << ","
+            << h_options[i].volatility << ","
+            << h_options[i].barrierType << ","
+            << h_options[i].exerciseType << ","
+            << h_options[i].optionType << ","
+            << h_averagePayoffs[i] << "\n";
+    }
+    csvFile.close();
+
+	std::cout << "Done!" << std::endl;
 
     return 0;
 }
