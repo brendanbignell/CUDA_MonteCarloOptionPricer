@@ -1,226 +1,225 @@
-﻿#include "CUDA_MonteCarloOptionPricer.h"
-#include <iostream>
-#include <cuda_runtime.h>
-#include <cuda_profiler_api.h>
+﻿#include <cuda_runtime.h>
 #include <curand_kernel.h>
-#include <device_launch_parameters.h>
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <iomanip>
+#include <chrono>
+#include <thread>
 
-#define CUDA_CHECK(call)                                   \
-do                                                    \
-{                                                     \
-    const cudaError_t error_code = call;              \
-    if (error_code != cudaSuccess)                    \
-    {                                                 \
-        printf("CUDA Error:\n");                      \
-        printf("    File:       %s\n", __FILE__);     \
-        printf("    Line:       %d\n", __LINE__);     \
-        printf("    Error code: %d\n", error_code);   \
-        printf("    Error text: %s\n",                \
-            cudaGetErrorString(error_code));          \
-        exit(1);                                      \
-    }                                                 \
+#define CUDA_CHECK(call) do { \
+    cudaError_t err = call; \
+    if (err != cudaSuccess) { \
+        std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__ << ": " << cudaGetErrorString(err) << std::endl; \
+        exit(EXIT_FAILURE); \
+    } \
 } while (0)
 
-using namespace std;
+// Option types
+enum BarrierType { DownIn, DownOut, UpIn, UpOut };
+enum ExerciseType { European, American };
+enum OptionType { Call, Put };
 
-// Kernel to initialize random states
-__global__ void init_random_states(curandState* states, int seed, int num_simulations) {
-    int idx = threadIdx.x + blockDim.x * blockIdx.x;
-    if (idx >= num_simulations) return;
-    curand_init(seed, idx, 0, &states[idx]);
+// Struct to hold barrier option properties
+struct BarrierOption {
+    float strike;
+    float barrier;
+    float maturity;
+    float spot;
+    float rate;
+    float volatility;
+    BarrierType barrierType;
+    ExerciseType exerciseType;
+    OptionType optionType;
+};
+
+// Kernel to initialize random states for Monte Carlo
+__global__ void initRandStates(curandState* randStates, unsigned long seed, int numPaths) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx < numPaths) {
+        curand_init(seed, idx, 0, &randStates[idx]);
+    }
 }
 
-//
-// CUDA kernel for generating random asset price paths and calculating payoff for a batch of options
-//
-// S0: Initial asset price
-// K: Strike price
-// r: Risk-free rate
-// sigma: Volatility
-// T: Time to maturity
-// num_steps: Number of time steps
-// num_simulations: Number of Monte Carlo simulations
-// num_options: Number of options in the batch
-// d_results: Device memory for option payoffs
-//
-__global__ void monte_carlo_kernel(curandState* states, float* d_option_prices, float* S0, float* K, 
-    float* r, float* sigma, float* T, int num_steps, int num_simulations, int num_options) {
-    
-    extern __shared__ float shared_payoff[];  // Shared memory for storing partial sums of payoffs
-    
-    int idx = threadIdx.x + blockDim.x * blockIdx.x;
-    if (idx >= num_simulations * num_options) return;
+// Kernel to calculate payoffs for barrier options
+__global__ void calculatePayoffs(BarrierOption* options, curandState* randStates, float* payoffs, int numPaths, int numOptions) {
+    int optionIdx = blockIdx.x;
+    int pathIdx = threadIdx.x + blockDim.x * blockIdx.y;
 
-    int option_idx = idx / num_simulations;
-    int sim_idx = idx % num_simulations;
+    if (optionIdx < numOptions && pathIdx < numPaths) {
+        BarrierOption option = options[optionIdx];
+        curandState localState = randStates[pathIdx];
 
-    curandState state = states[sim_idx];  // Load random state for this simulation
-    float dt = T[option_idx] / num_steps;  // Time step for this option
-    float S = S0[option_idx];              // Initial price for this option
+        float dt = option.maturity / 365.0f;
+        float spot = option.spot;
+        float barrier = option.barrier;
+        bool barrierActivated = false;
+        float payoff = 0.0f;
 
-    // Simulate the price path
-    for (int step = 0; step < num_steps; ++step) {
-        float Z = curand_normal(&state);  // Generate a standard normal random number
-        S = S * expf((r[option_idx] - 0.5f * sigma[option_idx] * sigma[option_idx]) * dt + sigma[option_idx] * sqrtf(dt) * Z);
-    }
+        // Simulate path
+        for (int i = 0; i < 365; i++) {
+            float gauss_bm = curand_normal(&localState);
+            spot *= exp((option.rate - 0.5f * option.volatility * option.volatility) * dt + option.volatility * sqrtf(dt) * gauss_bm);
 
-    // Calculate the payoff for a European call option
-    //d_results[option_idx * num_simulations + sim_idx] = fmaxf(S - K[option_idx], 0.0f);  // Call option payoff
-	float payoff = fmaxf(S - K[option_idx], 0.0f);  // Call option payoff
+            if ((option.barrierType == DownIn || option.barrierType == DownOut) && spot <= barrier) {
+                barrierActivated = true;
+            }
+            else if ((option.barrierType == UpIn || option.barrierType == UpOut) && spot >= barrier) {
+                barrierActivated = true;
+            }
 
-    // Store payoff in shared memory (one per thread)
-    shared_payoff[sim_idx] = payoff;
-    __syncthreads();  // Ensure all threads have written their payoffs
-
-    // Use reduction to sum up payoffs within the block (for the current option)
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (sim_idx < stride) {
-            shared_payoff[sim_idx] += shared_payoff[sim_idx + stride];
+            // Early exercise for American options
+            if (option.exerciseType == American) {
+                if (option.optionType == Call) {
+                    payoff = fmaxf(spot - option.strike, 0.0f);
+                }
+                else if (option.optionType == Put) {
+                    payoff = fmaxf(option.strike - spot, 0.0f);
+                }
+                // If the current payoff is greater than the previous payoff, exercise early
+                if (payoff > 0.0f) {
+                    payoffs[optionIdx * numPaths + pathIdx] = payoff * expf(-option.rate * (i * dt));
+                    return;
+                }
+            }
         }
-        __syncthreads();
-    }
 
-    // The first thread in the block calculates the final average payoff and discounts it to present value
-    if (sim_idx == 0) {
-        float average_payoff = shared_payoff[0] / num_simulations;
-        d_option_prices[option_idx] = average_payoff * expf(-r[option_idx] * T[option_idx]);  // Discount to present value
+        // Calculate payoff at maturity for European options or if no early exercise occurred for American options
+        if (option.optionType == Call) {
+            if ((option.barrierType == DownIn || option.barrierType == UpIn) && barrierActivated) {
+                payoff = fmaxf(spot - option.strike, 0.0f);
+            }
+            else if ((option.barrierType == DownOut || option.barrierType == UpOut) && !barrierActivated) {
+                payoff = fmaxf(spot - option.strike, 0.0f);
+            }
+        }
+        else if (option.optionType == Put) {
+            if ((option.barrierType == DownIn || option.barrierType == UpIn) && barrierActivated) {
+                payoff = fmaxf(option.strike - spot, 0.0f);
+            }
+            else if ((option.barrierType == DownOut || option.barrierType == UpOut) && !barrierActivated) {
+                payoff = fmaxf(option.strike - spot, 0.0f);
+            }
+        }
+        payoffs[optionIdx * numPaths + pathIdx] = payoff * expf(-option.rate * option.maturity);
     }
-
-    states[sim_idx] = state;  // Save state back for this simulation
 }
 
-// Function to run the Monte Carlo simulation on a specific GPU for multiple options in a batch
-void monte_carlo_cuda(int gpu_id, int num_simulations, int num_steps, float* S0, float* K, 
-    float* r, float* sigma, float* T, int num_options, float* option_prices) {
-    
-	cout << "Running Monte Carlo simulation on GPU " << gpu_id << " for " << num_options << " options with " << num_simulations << " simulations each." << endl;
+// Kernel to calculate average payoff for each option
+__global__ void calculateAveragePayoff(float* payoffs, float* averagePayoffs, int numPaths, int numOptions) {
+    int optionIdx = blockIdx.x;
+    if (optionIdx < numOptions) {
+        float sum = 0.0f;
+        for (int i = 0; i < numPaths; i++) {
+            sum += payoffs[optionIdx * numPaths + i];
+        }
+        averagePayoffs[optionIdx] = sum / numPaths;
+    }
+}
 
-    CUDA_CHECK(cudaSetDevice(gpu_id));  // Set the current device to this GPU
+void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int numPaths, const std::vector<BarrierOption>& h_options, std::vector<float>& h_averagePayoffs) {
+    CUDA_CHECK(cudaSetDevice(device));
 
-    // Allocate memory for results and random states on the device
-    float* d_results;
-    curandState* d_states;
-    CUDA_CHECK(cudaMalloc(&d_results, num_simulations * num_options * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_states, num_simulations * sizeof(curandState)));
+    int numOptionsInBatch = batchEndIdx - batchStartIdx;
+    BarrierOption* d_options;
+    CUDA_CHECK(cudaMalloc(&d_options, numOptionsInBatch * sizeof(BarrierOption)));
+    CUDA_CHECK(cudaMemcpy(d_options, &h_options[batchStartIdx], numOptionsInBatch * sizeof(BarrierOption), cudaMemcpyHostToDevice));
 
-    // Allocate device memory for option parameters
-    float* d_S0, * d_K, * d_r, * d_sigma, * d_T, * d_option_prices;
-    CUDA_CHECK(cudaMalloc(&d_S0, num_options * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_K, num_options * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_r, num_options * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_sigma, num_options * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_T, num_options * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_option_prices, num_options * sizeof(float)));  // One result per option
+    float* d_payoffs;
+    CUDA_CHECK(cudaMalloc(&d_payoffs, numOptionsInBatch * numPaths * sizeof(float)));
 
-    // Copy option parameters to device
-    CUDA_CHECK(cudaMemcpy(d_S0, S0, num_options * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_K, K, num_options * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_r, r, num_options * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_sigma, sigma, num_options * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_T, T, num_options * sizeof(float), cudaMemcpyHostToDevice));
+    float* d_averagePayoffs;
+    CUDA_CHECK(cudaMalloc(&d_averagePayoffs, numOptionsInBatch * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_averagePayoffs, 0, numOptionsInBatch * sizeof(float)));
+
+    curandState* d_randStates;
+    CUDA_CHECK(cudaMalloc(&d_randStates, numPaths * sizeof(curandState)));
+
+    int blockSize = 256;
+    dim3 numBlocks(numOptionsInBatch, (numPaths + blockSize - 1) / blockSize);
 
     // Initialize random states
-    int block_size = 256;
-    int num_blocks = (num_simulations + block_size - 1) / block_size;
-    init_random_states <<<num_blocks, block_size>>> (d_states, 1234, num_simulations);
+    initRandStates << <numBlocks.y, blockSize >> > (d_randStates, time(NULL), numPaths);
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Launch the Monte Carlo kernel for multiple options in a batch
-    //num_blocks = (num_simulations * num_options + block_size - 1) / block_size;
-    monte_carlo_kernel << <num_options, num_blocks, block_size >> > (d_states, d_option_prices, d_S0, d_K, d_r, d_sigma, d_T, num_steps, num_simulations, num_options);
+    // Calculate payoffs
+    calculatePayoffs << <numBlocks, blockSize >> > (d_options, d_randStates, d_payoffs, numPaths, numOptionsInBatch);
+    CUDA_CHECK(cudaDeviceSynchronize());
 
+    // Calculate average payoff for each option
+    calculateAveragePayoff << <numOptionsInBatch, 1 >> > (d_payoffs, d_averagePayoffs, numPaths, numOptionsInBatch);
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    //cudaMemcpy(results, d_results, num_simulations * num_options * sizeof(float), cudaMemcpyDeviceToHost);
-    //CUDA_CHECK(cudaMemcpy(results, d_results, num_options * sizeof(float), cudaMemcpyDeviceToHost));
-    
-    // Copy results back to the host
-    CUDA_CHECK(cudaMemcpy(option_prices, d_option_prices, num_options * sizeof(float), cudaMemcpyDeviceToHost));
+    // Copy results back to host
+    CUDA_CHECK(cudaMemcpy(&h_averagePayoffs[batchStartIdx], d_averagePayoffs, numOptionsInBatch * sizeof(float), cudaMemcpyDeviceToHost));
 
-    // Free device memory
-    //CUDA_CHECK(cudaFree(d_results));
-    CUDA_CHECK(cudaFree(d_states));
-    CUDA_CHECK(cudaFree(d_S0));
-    CUDA_CHECK(cudaFree(d_K));
-    CUDA_CHECK(cudaFree(d_r));
-    CUDA_CHECK(cudaFree(d_sigma));
-    CUDA_CHECK(cudaFree(d_T));
-	CUDA_CHECK(cudaFree(d_option_prices));
+    // Free memory
+    CUDA_CHECK(cudaFree(d_options));
+    CUDA_CHECK(cudaFree(d_payoffs));
+    CUDA_CHECK(cudaFree(d_averagePayoffs));
+    CUDA_CHECK(cudaFree(d_randStates));
 }
 
 int main() {
-    int num_gpus;
-    cudaGetDeviceCount(&num_gpus);
-    cout << "Number of GPUs: " << num_gpus << endl;
+    int numOptions = 1000000;
+    int numPaths = 10000;
+    int batchSize = 10000; // Set batch size to reduce memory usage
+    int numDevices;
+    CUDA_CHECK(cudaGetDeviceCount(&numDevices));
 
-    // Option parameters
-    int num_options = 100;
-    int num_simulations = 1000000;
-	int num_steps = 252;  // Number of time steps (business days in a year)
-    int batch_size = 10;  // Number of options per batch
-
-    // Allocate memory for option parameters
-    float* S0 = (float*)malloc(num_options * sizeof(float));
-    float* K = (float*)malloc(num_options * sizeof(float));
-    float* r = (float*)malloc(num_options * sizeof(float));
-    float* sigma = (float*)malloc(num_options * sizeof(float));
-    float* T = (float*)malloc(num_options * sizeof(float));
-
-    // Generate semi-random option parameters
-    /*
-    for (int i = 0; i < num_options; ++i) {
-        S0[i] = 100.0f + (i * 0.001);
-        K[i] = 75.0f + (i * 0.001);
-        r[i] = 0.05f + (i * 0.0001f);
-        sigma[i] = 0.2f + (i * 0.0001f);
-        T[i] = 1.0f;
-    }
-    */
-    // Generate semi-random option parameters
-    for (int i = 0; i < num_options; ++i) {
-        S0[i] = 100.0f;
-        K[i] = 100.0f;
-        r[i] = 0.05f;
-        sigma[i] = 0.01f;
-        T[i] = 1.0f;
+    std::vector<BarrierOption> h_options(numOptions);
+    // Initialize options with some random data (this should be replaced with actual portfolio data)
+    for (int i = 0; i < numOptions; i++) {
+        h_options[i] = { 100.0f, 90.0f + i % 20, 1.0f, 90.0f + i % 20, 0.01f * (i % 21), 0.01f * (i % 20),
+            static_cast<BarrierType>(i % 4), (i % 2 == 0) ? European : American, (i % 2 == 0) ? Call : Put };
     }
 
-    // Allocate memory for results
-    float* option_prices = (float*)malloc(num_options * sizeof(float));
+    std::vector<float> h_averagePayoffs(numOptions, 0.0f);
 
-    // Stream array for asynchronous execution
-    cudaStream_t* streams = (cudaStream_t*)malloc(num_gpus * sizeof(cudaStream_t));
-    for (int i = 0; i < num_gpus; ++i) {
-        CUDA_CHECK(cudaSetDevice(i));
-        CUDA_CHECK(cudaStreamCreate(&streams[i]));
+    // Measure the start time
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // Spread load across all available GPUs and batch options concurrently
+    std::vector<std::thread> gpuThreads;
+    for (int device = 0; device < numDevices; device++) {
+        for (int batchStartIdx = device * batchSize; batchStartIdx < numOptions; batchStartIdx += batchSize * numDevices) {
+            int batchEndIdx = std::min(batchStartIdx + batchSize, numOptions);
+            gpuThreads.emplace_back(processBatchOnDevice, device, batchStartIdx, batchEndIdx, numPaths, std::ref(h_options), std::ref(h_averagePayoffs));
+        }
     }
 
-    // Launch simulations in batches across multiple GPUs
-    for (int i = 0; i < num_options; i += batch_size) {
-        int gpu_id = (i / batch_size) % num_gpus;
-        int batch_end = min(i + batch_size, num_options);
-		//cout << "Running batch " << i / batch_size + 1 << " on GPU " << gpu_id << " for options " << i << " to " << batch_end - 1 << endl;
-        monte_carlo_cuda(gpu_id, num_simulations, num_steps, &S0[i], &K[i], &r[i], &sigma[i], &T[i], batch_end - i, &option_prices[i]);
+    // Wait for all threads to finish
+    for (auto& thread : gpuThreads) {
+        thread.join();
     }
 
-    // Print results
-	int num_print = 10;
-	cout << "\nLast " << num_print << " Option Prices : " << endl;
-    for (int i = 0; i < num_options; ++i) {
-        if(i > (num_options - num_print))
-            std::cout << "Option " << i + 1 << " Price: " << option_prices[i] << std::endl;
-    }
-	cout << "\nDone pricing " << num_options << " options with " << num_simulations << " simulations each." << endl;
+    // Measure the end time
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    double optionsPerSecond = numOptions / elapsed.count();
 
-    // Free memory
-    for (int i = 0; i < num_gpus; ++i) {
-        CUDA_CHECK(cudaStreamDestroy(streams[i]));
+    // Output the calculated price for each individual option
+    int maxDisplay = numOptions > 20 ? 20 : numOptions;
+    std::cout << "\nSummary of Option Parameters and Calculated Prices (First 20):\n";
+    std::cout << std::setw(10) << "Option" << std::setw(10) << "Type" << std::setw(10) << "Strike" << std::setw(10) << "Barrier"
+        << std::setw(10) << "Spot" << std::setw(10) << "Rate" << std::setw(15) << "Volatility" << std::setw(15) << "Exercise Type"
+        << std::setw(15) << "Barrier Type" << std::setw(15) << "Price" << std::endl;
+    for (int i = 0; i < maxDisplay; i++) {
+        std::cout << std::setw(10) << i + 1;
+        std::cout << std::setw(10) << (h_options[i].optionType == Call ? "Call" : "Put");
+        std::cout << std::setw(10) << h_options[i].strike;
+        std::cout << std::setw(10) << h_options[i].barrier;
+        std::cout << std::setw(10) << h_options[i].spot;
+        std::cout << std::setw(10) << h_options[i].rate;
+        std::cout << std::setw(15) << h_options[i].volatility;
+        std::cout << std::setw(15) << (h_options[i].exerciseType == European ? "European" : "American");
+        std::cout << std::setw(15) << (h_options[i].barrierType == DownIn ? "DownIn" : (h_options[i].barrierType == DownOut ? "DownOut" : (h_options[i].barrierType == UpIn ? "UpIn" : "UpOut")));
+        std::cout << std::setw(15) << h_averagePayoffs[i] << std::endl;
     }
-    free(S0);
-    free(K);
-    free(r);
-    free(sigma);
-    free(T);
-    free(option_prices);
-    free(streams);
+
+    // Output performance summary
+    std::cout << numOptions << " priced in " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "Options per Second: " << optionsPerSecond << "  (" << numPaths << " path each)" << std::endl;
 
     return 0;
 }
