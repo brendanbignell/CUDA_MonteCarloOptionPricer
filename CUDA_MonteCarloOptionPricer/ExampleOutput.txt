@@ -1,7 +1,7 @@
 Creating 100000000 random barrier options
 
 Summary of Option Parameters and Calculated Prices (First 20):
-    Option      Type    Strike   Barrier      Spot      Rate     Volatility  Exercise Type   Barrier Type          Price
+    Option      Type    Strike   Barrier  Maturity      Spot      Rate     Volatility  Exercise Type   Barrier Type          Price
          1      Call        41      8466   7.34018      6498     0.015         0.0709       European           UpIn        2329.65
          2      Call      4462      5705   7.04723      3279    0.0811         0.0952       American          UpOut        8.99154
          3       Put      4827      5436   8.67077      4603    0.0899         0.0153       European         DownIn              0

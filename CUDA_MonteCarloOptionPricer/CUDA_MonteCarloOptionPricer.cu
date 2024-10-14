@@ -174,7 +174,7 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
 }
 
 int main() {
-    int numOptions = 100 * 1000000;
+    int numOptions = 1 * 1000000;
     int numPaths = 100000;
     int batchSize = 20000; // Set batch size to reduce memory usage
     int numDevices;
@@ -242,7 +242,7 @@ int main() {
     // Output the calculated price for each individual option
     int maxDisplay = numOptions > 20 ? 20 : numOptions;
     std::cout << "\nSummary of Option Parameters and Calculated Prices (First 20):\n";
-    std::cout << std::setw(10) << "Option" << std::setw(10) << "Type" << std::setw(10) << "Strike" << std::setw(10) << "Barrier"
+    std::cout << std::setw(10) << "Option" << std::setw(10) << "Type" << std::setw(10) << "Strike" << std::setw(10) << "Barrier" << std::setw(10) << "Maturity"
         << std::setw(10) << "Spot" << std::setw(10) << "Rate" << std::setw(15) << "Volatility" << std::setw(15) << "Exercise Type"
         << std::setw(15) << "Barrier Type" << std::setw(15) << "Price" << std::endl;
     for (int i = 0; i < maxDisplay; i++) {
