@@ -15,7 +15,7 @@ using namespace std;
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
-        std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__ << ": " << cudaGetErrorString(err) << std::endl; \
+        std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__ << ": " << cudaGetErrorString(err) << endl; \
         exit(EXIT_FAILURE); \
     } \
 } while (0)
@@ -55,18 +55,19 @@ __global__ void calculatePayoffs(BarrierOption* options, curandState* randStates
         BarrierOption option = options[optionIdx];
         curandState localState = randStates[pathIdx];
 
-        int numSteps = static_cast<int>(365 * option.maturity); // Adjust number of steps based on maturity
+		int numSteps = static_cast<int>(365 * option.maturity); // Daily steps
         float dt = option.maturity / numSteps;
         float spot = option.spot;
         float barrier = option.barrier;
         bool barrierActivated = false;
         float payoff = 0.0f;
 
-        // Simulate path
+		// Simulate path of the underlying asset
         for (int i = 0; i < numSteps; i++) {
             float gauss_bm = curand_normal(&localState);
             spot *= exp((option.rate - 0.5f * option.volatility * option.volatility) * dt + option.volatility * sqrtf(dt) * gauss_bm);
 
+			// Check if a barrier is activated
             if ((option.barrierType == DownIn || option.barrierType == DownOut) && spot <= barrier) {
                 barrierActivated = true;
             }
@@ -82,7 +83,9 @@ __global__ void calculatePayoffs(BarrierOption* options, curandState* randStates
                 else if (option.optionType == Put) {
                     payoff = fmaxf(option.strike - spot, 0.0f);
                 }
-                // If the current payoff is greater than the previous payoff, exercise early
+				// Note this is a dumb early exercise strategy for demonstration purposes
+				// that exercises as soon as the option is in the money
+				// In practice, the optimal early exercise strategy is more complex
                 if (payoff > 0.0f) {
                     payoffs[optionIdx * numPaths + pathIdx] = payoff * expf(-option.rate * (i * dt));
                     return;
@@ -161,7 +164,7 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
     CUDA_CHECK(cudaMemcpy(batchAveragePayoffs.data(), d_averagePayoffs, numOptionsInBatch * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Lock and update the shared host results
-    std::lock_guard<std::mutex> guard(resultMutex);
+    lock_guard<std::mutex> guard(resultMutex);
     for (int i = 0; i < numOptionsInBatch; i++) {
         h_averagePayoffs[batchStartIdx + i] = batchAveragePayoffs[i];
     }
@@ -174,38 +177,38 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
 }
 
 int main() {
-    int numOptions = 1 * 1000000;
-    int numPaths = 100000;
-    int batchSize = 20000; // Set batch size to reduce memory usage
-    int numDevices;
+	int numOptions = 1 * 1000000;   // Number of barrier options to price
+	int numPaths = 100000;          // Number of paths to simulate for each option
+    int batchSize = 20000;          // Set batch size to reduce memory usage
+	int numDevices;                 // Number of available CUDA devices
     CUDA_CHECK(cudaGetDeviceCount(&numDevices));
 
-    std::cout << "Creating " << numOptions << " random barrier options" << endl;
+    cout << "Creating " << numOptions << " random barrier options" << endl;
 
-    std::vector<BarrierOption> h_options(numOptions);
+    vector<BarrierOption> h_options(numOptions);
     // Generate random data for the batch of options within the specified ranges
     for (int i = 0; i < numOptions; i++) {
         h_options[i] = {
-            static_cast<float>(rand() % 10001), // strike
-            static_cast<float>(rand() % 10001), // barrier
-            static_cast<float>(rand() % 3653) / 365.25f, // maturity upto 10 years in days fraction of a year
-            static_cast<float>(rand() % 10001), // spot
-            static_cast<float>(rand() % 1001) / 10000.0f, // rate (0 to 10%)
-            static_cast<float>(rand() % 1001) / 10000.0f, // volatility (0 to 10%)
-            static_cast<BarrierType>(rand() % 4),   // barrierType
-            (rand() % 2 == 0) ? European : American, // exerciseType
-            (rand() % 2 == 0) ? Call : Put          // optionType
+            static_cast<float>(rand() % 10001),             // strike
+            static_cast<float>(rand() % 10001),             // barrier
+            static_cast<float>(rand() % 3653) / 365.25f,    // maturity upto 10 years in day fraction of a year
+            static_cast<float>(rand() % 10001),             // spot
+            static_cast<float>(rand() % 1001) / 10000.0f,   // interest rate (0 to 10%)
+            static_cast<float>(rand() % 1001) / 10000.0f,   // volatility (0 to 10%)
+            static_cast<BarrierType>(rand() % 4),           // barrierType
+            (rand() % 2 == 0) ? European : American,        // exerciseType
+            (rand() % 2 == 0) ? Call : Put                  // optionType
         };
     }
 
-    std::vector<float> h_averagePayoffs(numOptions, 0.0f);
-    std::mutex resultMutex;
+    vector<float> h_averagePayoffs(numOptions, 0.0f);
+    mutex resultMutex;
 
     // Measure the start time
     auto start = std::chrono::high_resolution_clock::now();
 
     // Spread load across all available GPUs and batch options concurrently with throttling
-    std::vector<std::thread> gpuThreads;
+    vector<std::thread> gpuThreads;
     int maxConcurrentBatches = numDevices * 2; // Limit concurrent batches to prevent GPU memory exhaustion
     int currentBatch = 0;
 
@@ -214,7 +217,7 @@ int main() {
             int batchStartIdx = currentBatch * batchSize;
             int batchEndIdx = std::min(batchStartIdx + batchSize, numOptions);
             int device = currentBatch % numDevices;
-            gpuThreads.emplace_back(processBatchOnDevice, device, batchStartIdx, batchEndIdx, numPaths, std::ref(h_options), std::ref(h_averagePayoffs), std::ref(resultMutex));
+            gpuThreads.emplace_back(processBatchOnDevice, device, batchStartIdx, batchEndIdx, numPaths, ref(h_options), ref(h_averagePayoffs), ref(resultMutex));
             currentBatch++;
         }
         // Join threads that have completed their batch processing
@@ -235,35 +238,35 @@ int main() {
     }
 
     // Measure the end time
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
+    auto end = chrono::high_resolution_clock::now();
+    chrono::duration<double> elapsed = end - start;
     double optionsPerSecond = numOptions / elapsed.count();
 
     // Output the calculated price for each individual option
     int maxDisplay = numOptions > 20 ? 20 : numOptions;
-    std::cout << "\nSummary of Option Parameters and Calculated Prices (First 20):\n";
-    std::cout << std::setw(10) << "Option" << std::setw(10) << "Type" << std::setw(10) << "Strike" << std::setw(10) << "Barrier" << std::setw(10) << "Maturity"
-        << std::setw(10) << "Spot" << std::setw(10) << "Rate" << std::setw(15) << "Volatility" << std::setw(15) << "Exercise Type"
-        << std::setw(15) << "Barrier Type" << std::setw(15) << "Price" << std::endl;
+    cout << "\nSummary of Option Parameters and Calculated Prices (First 20):\n";
+    cout << setw(10) << "Option" << setw(10) << "Type" << setw(10) << "Strike" << setw(10) << "Barrier" << setw(10) << "Maturity"
+        << setw(10) << "Spot" << setw(10) << "Rate" << setw(15) << "Volatility" << setw(15) << "Exercise Type"
+        << setw(15) << "Barrier Type" << setw(15) << "Price" << endl;
     for (int i = 0; i < maxDisplay; i++) {
-        std::cout << std::setw(10) << i + 1;
-        std::cout << std::setw(10) << (h_options[i].optionType == Call ? "Call" : "Put");
-        std::cout << std::setw(10) << h_options[i].strike;
-        std::cout << std::setw(10) << h_options[i].barrier;
-        std::cout << std::setw(10) << h_options[i].maturity;
-        std::cout << std::setw(10) << h_options[i].spot;
-        std::cout << std::setw(10) << h_options[i].rate;
-        std::cout << std::setw(15) << h_options[i].volatility;
-        std::cout << std::setw(15) << (h_options[i].exerciseType == European ? "European" : "American");
-        std::cout << std::setw(15) << (h_options[i].barrierType == DownIn ? "DownIn" : (h_options[i].barrierType == DownOut ? "DownOut" : (h_options[i].barrierType == UpIn ? "UpIn" : "UpOut")));
-        std::cout << std::setw(15) << h_averagePayoffs[i] << std::endl;
+        cout << setw(10) << i + 1;
+        cout << setw(10) << (h_options[i].optionType == Call ? "Call" : "Put");
+        cout << setw(10) << h_options[i].strike;
+        cout << setw(10) << h_options[i].barrier;
+        cout << setw(10) << h_options[i].maturity;
+        cout << setw(10) << h_options[i].spot;
+        cout << setw(10) << h_options[i].rate;
+        cout << setw(15) << h_options[i].volatility;
+        cout << setw(15) << (h_options[i].exerciseType == European ? "European" : "American");
+        cout << setw(15) << (h_options[i].barrierType == DownIn ? "DownIn" : (h_options[i].barrierType == DownOut ? "DownOut" : (h_options[i].barrierType == UpIn ? "UpIn" : "UpOut")));
+        cout << setw(15) << h_averagePayoffs[i] << endl;
     }
 
     // Output performance summary
-    std::cout << "Total Time Elapsed: " << elapsed.count() << " seconds" << std::endl;
-    std::cout << "Options Priced per Second: " << optionsPerSecond << "  (" << numPaths << " path each)" << std::endl;
+    cout << "Total Time Elapsed: " << elapsed.count() << " seconds" << endl;
+    cout << "Options Priced per Second: " << optionsPerSecond << "  (" << numPaths << " path each)" << endl;
 
-	std::cout << "Writing results to CSV file..." << std::endl;
+	cout << "Writing results to CSV file..." << endl;
 
     // Output the data to a CSV file
     const size_t bufsize = 256 * 1024;
@@ -289,7 +292,7 @@ int main() {
     }
     csvFile.close();
 
-    std::cout << "Done!" << std::endl;
+    cout << "Done!" << endl;
 
     return 0;
 }
