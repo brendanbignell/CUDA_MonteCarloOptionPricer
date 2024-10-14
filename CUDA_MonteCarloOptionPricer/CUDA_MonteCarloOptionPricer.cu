@@ -8,6 +8,7 @@
 #include <thread>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
 
 using namespace std;
 
@@ -41,7 +42,7 @@ struct BarrierOption {
 __global__ void initRandStates(curandState* randStates, unsigned long seed, int numPaths) {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx < numPaths) {
-        curand_init(seed, idx, 0, &randStates[idx]);
+        curand_init(seed + idx, idx, 0, &randStates[idx]);
     }
 }
 
@@ -54,14 +55,15 @@ __global__ void calculatePayoffs(BarrierOption* options, curandState* randStates
         BarrierOption option = options[optionIdx];
         curandState localState = randStates[pathIdx];
 
-        float dt = option.maturity / 365.0f;
+        int numSteps = static_cast<int>(365 * option.maturity); // Adjust number of steps based on maturity
+        float dt = option.maturity / numSteps;
         float spot = option.spot;
         float barrier = option.barrier;
         bool barrierActivated = false;
         float payoff = 0.0f;
 
         // Simulate path
-        for (int i = 0; i < 365; i++) {
+        for (int i = 0; i < numSteps; i++) {
             float gauss_bm = curand_normal(&localState);
             spot *= exp((option.rate - 0.5f * option.volatility * option.volatility) * dt + option.volatility * sqrtf(dt) * gauss_bm);
 
@@ -121,7 +123,7 @@ __global__ void calculateAveragePayoff(float* payoffs, float* averagePayoffs, in
     }
 }
 
-void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int numPaths, const std::vector<BarrierOption>& h_options, std::vector<float>& h_averagePayoffs) {
+void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int numPaths, const std::vector<BarrierOption>& h_options, std::vector<float>& h_averagePayoffs, std::mutex& resultMutex) {
     CUDA_CHECK(cudaSetDevice(device));
 
     int numOptionsInBatch = batchEndIdx - batchStartIdx;
@@ -155,7 +157,14 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Copy results back to host
-    CUDA_CHECK(cudaMemcpy(&h_averagePayoffs[batchStartIdx], d_averagePayoffs, numOptionsInBatch * sizeof(float), cudaMemcpyDeviceToHost));
+    std::vector<float> batchAveragePayoffs(numOptionsInBatch);
+    CUDA_CHECK(cudaMemcpy(batchAveragePayoffs.data(), d_averagePayoffs, numOptionsInBatch * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Lock and update the shared host results
+    std::lock_guard<std::mutex> guard(resultMutex);
+    for (int i = 0; i < numOptionsInBatch; i++) {
+        h_averagePayoffs[batchStartIdx + i] = batchAveragePayoffs[i];
+    }
 
     // Free memory
     CUDA_CHECK(cudaFree(d_options));
@@ -165,23 +174,22 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
 }
 
 int main() {
-    int numOptions = 1000000;
-    int numPaths = 10000;
-    int batchSize = 10000; // Set batch size to reduce memory usage
+    int numOptions = 100 * 1000000;
+    int numPaths = 100000;
+    int batchSize = 20000; // Set batch size to reduce memory usage
     int numDevices;
-    
     CUDA_CHECK(cudaGetDeviceCount(&numDevices));
 
-    std::cout << "Creating " << numOptions << " random barrier options"  << endl;
+    std::cout << "Creating " << numOptions << " random barrier options" << endl;
 
     std::vector<BarrierOption> h_options(numOptions);
     // Generate random data for the batch of options within the specified ranges
     for (int i = 0; i < numOptions; i++) {
         h_options[i] = {
-            static_cast<float>(rand() % 10000 + 1), // strike
-            static_cast<float>(rand() % 10000 + 1), // barrier
-            1.0f,                                    // maturity
-            static_cast<float>(rand() % 10000 + 1), // spot
+            static_cast<float>(rand() % 10001), // strike
+            static_cast<float>(rand() % 10001), // barrier
+            static_cast<float>(rand() % 3653) / 365.25f, // maturity upto 10 years in days fraction of a year
+            static_cast<float>(rand() % 10001), // spot
             static_cast<float>(rand() % 1001) / 10000.0f, // rate (0 to 10%)
             static_cast<float>(rand() % 1001) / 10000.0f, // volatility (0 to 10%)
             static_cast<BarrierType>(rand() % 4),   // barrierType
@@ -191,20 +199,37 @@ int main() {
     }
 
     std::vector<float> h_averagePayoffs(numOptions, 0.0f);
+    std::mutex resultMutex;
 
     // Measure the start time
     auto start = std::chrono::high_resolution_clock::now();
 
-    // Spread load across all available GPUs and batch options concurrently
+    // Spread load across all available GPUs and batch options concurrently with throttling
     std::vector<std::thread> gpuThreads;
-    for (int device = 0; device < numDevices; device++) {
-        for (int batchStartIdx = device * batchSize; batchStartIdx < numOptions; batchStartIdx += batchSize * numDevices) {
+    int maxConcurrentBatches = numDevices * 2; // Limit concurrent batches to prevent GPU memory exhaustion
+    int currentBatch = 0;
+
+    while (currentBatch * batchSize < numOptions) {
+        while (gpuThreads.size() < maxConcurrentBatches && currentBatch * batchSize < numOptions) {
+            int batchStartIdx = currentBatch * batchSize;
             int batchEndIdx = std::min(batchStartIdx + batchSize, numOptions);
-            gpuThreads.emplace_back(processBatchOnDevice, device, batchStartIdx, batchEndIdx, numPaths, std::ref(h_options), std::ref(h_averagePayoffs));
+            int device = currentBatch % numDevices;
+            gpuThreads.emplace_back(processBatchOnDevice, device, batchStartIdx, batchEndIdx, numPaths, std::ref(h_options), std::ref(h_averagePayoffs), std::ref(resultMutex));
+            currentBatch++;
+        }
+        // Join threads that have completed their batch processing
+        for (auto it = gpuThreads.begin(); it != gpuThreads.end();) {
+            if (it->joinable()) {
+                it->join();
+                it = gpuThreads.erase(it);
+            }
+            else {
+                ++it;
+            }
         }
     }
 
-    // Wait for all threads to finish
+    // Wait for any remaining threads to finish
     for (auto& thread : gpuThreads) {
         thread.join();
     }
@@ -214,16 +239,41 @@ int main() {
     std::chrono::duration<double> elapsed = end - start;
     double optionsPerSecond = numOptions / elapsed.count();
 
+    // Output the calculated price for each individual option
+    int maxDisplay = numOptions > 20 ? 20 : numOptions;
+    std::cout << "\nSummary of Option Parameters and Calculated Prices (First 20):\n";
+    std::cout << std::setw(10) << "Option" << std::setw(10) << "Type" << std::setw(10) << "Strike" << std::setw(10) << "Barrier"
+        << std::setw(10) << "Spot" << std::setw(10) << "Rate" << std::setw(15) << "Volatility" << std::setw(15) << "Exercise Type"
+        << std::setw(15) << "Barrier Type" << std::setw(15) << "Price" << std::endl;
+    for (int i = 0; i < maxDisplay; i++) {
+        std::cout << std::setw(10) << i + 1;
+        std::cout << std::setw(10) << (h_options[i].optionType == Call ? "Call" : "Put");
+        std::cout << std::setw(10) << h_options[i].strike;
+        std::cout << std::setw(10) << h_options[i].barrier;
+        std::cout << std::setw(10) << h_options[i].maturity;
+        std::cout << std::setw(10) << h_options[i].spot;
+        std::cout << std::setw(10) << h_options[i].rate;
+        std::cout << std::setw(15) << h_options[i].volatility;
+        std::cout << std::setw(15) << (h_options[i].exerciseType == European ? "European" : "American");
+        std::cout << std::setw(15) << (h_options[i].barrierType == DownIn ? "DownIn" : (h_options[i].barrierType == DownOut ? "DownOut" : (h_options[i].barrierType == UpIn ? "UpIn" : "UpOut")));
+        std::cout << std::setw(15) << h_averagePayoffs[i] << std::endl;
+    }
+
     // Output performance summary
     std::cout << "Total Time Elapsed: " << elapsed.count() << " seconds" << std::endl;
     std::cout << "Options Priced per Second: " << optionsPerSecond << "  (" << numPaths << " path each)" << std::endl;
 
-    string tempPath = std::filesystem::temp_directory_path().string();
-    tempPath.append("barriers.csv");
+	std::cout << "Writing results to CSV file..." << std::endl;
 
-    std::cout << "Creating CSV file: " << tempPath << endl;
+    // Output the data to a CSV file
+    const size_t bufsize = 256 * 1024;
+    char buf[bufsize];
 
-    std::ofstream csvFile(tempPath);
+    string filePath = std::filesystem::temp_directory_path().string().append("barriers.csv");
+    std::ofstream csvFile;
+    csvFile.rdbuf()->pubsetbuf(buf, bufsize);
+	csvFile.open(filePath);
+    
     csvFile << "Strike,Barrier,Maturity,Spot,Rate,Volatility,BarrierType,ExerciseType,OptionType,Price\n";
     for (int i = 0; i < numOptions; i++) {
         csvFile << h_options[i].strike << ","
@@ -239,7 +289,7 @@ int main() {
     }
     csvFile.close();
 
-	std::cout << "Done!" << std::endl;
+    std::cout << "Done!" << std::endl;
 
     return 0;
 }
