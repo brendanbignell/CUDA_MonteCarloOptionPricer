@@ -49,25 +49,28 @@ __global__ void initRandStates(curandState* randStates, unsigned long seed, int 
 // Kernel to calculate payoffs for barrier options
 __global__ void calculatePayoffs(BarrierOption* options, curandState* randStates, float* payoffs, int numPaths, int numOptions) {
     int optionIdx = blockIdx.x;
-    int pathIdx = threadIdx.x + blockDim.x * blockIdx.y;
+    int pathIdx = threadIdx.x + blockIdx.y * blockDim.x;
 
     if (optionIdx < numOptions && pathIdx < numPaths) {
         BarrierOption option = options[optionIdx];
         curandState localState = randStates[pathIdx];
 
-		int numSteps = static_cast<int>(365 * option.maturity); // Daily steps
+        int numSteps = static_cast<int>(365 * option.maturity); // Adjust number of steps based on maturity
         float dt = option.maturity / numSteps;
         float spot = option.spot;
         float barrier = option.barrier;
         bool barrierActivated = false;
         float payoff = 0.0f;
 
-		// Simulate path of the underlying asset
+		// For each potential path in Longstaff-Schwartz approach for American options
+        float continuationValue = 0.0f;
+		float pathPayoffs[365 * 10];
+
+        // Simulate path
         for (int i = 0; i < numSteps; i++) {
             float gauss_bm = curand_normal(&localState);
             spot *= exp((option.rate - 0.5f * option.volatility * option.volatility) * dt + option.volatility * sqrtf(dt) * gauss_bm);
 
-			// Check if a barrier is activated
             if ((option.barrierType == DownIn || option.barrierType == DownOut) && spot <= barrier) {
                 barrierActivated = true;
             }
@@ -83,34 +86,39 @@ __global__ void calculatePayoffs(BarrierOption* options, curandState* randStates
                 else if (option.optionType == Put) {
                     payoff = fmaxf(option.strike - spot, 0.0f);
                 }
-				// Note this is a dumb early exercise strategy for demonstration purposes
-				// that exercises as soon as the option is in the money
-				// In practice, the optimal early exercise strategy is more complex
-                if (payoff > 0.0f) {
-                    payoffs[optionIdx * numPaths + pathIdx] = payoff * expf(-option.rate * (i * dt));
-                    return;
-                }
+                // Store the current payoff for calculating the continuation value later
+                pathPayoffs[i] = payoff * expf(-option.rate * (i * dt));
             }
         }
 
-        // Calculate payoff at maturity for European options or if no early exercise occurred for American options
-        if (option.optionType == Call) {
-            if ((option.barrierType == DownIn || option.barrierType == UpIn) && barrierActivated) {
-                payoff = fmaxf(spot - option.strike, 0.0f);
+        // Calculate the continuation value for American options using Longstaff-Schwartz approach
+        if (option.exerciseType == American) {
+            continuationValue = pathPayoffs[numSteps - 1];
+            for (int i = numSteps - 2; i >= 0; i--) {
+                continuationValue = fmaxf(continuationValue, pathPayoffs[i]);
             }
-            else if ((option.barrierType == DownOut || option.barrierType == UpOut) && !barrierActivated) {
-                payoff = fmaxf(spot - option.strike, 0.0f);
-            }
+            payoffs[optionIdx * numPaths + pathIdx] = continuationValue;
         }
-        else if (option.optionType == Put) {
-            if ((option.barrierType == DownIn || option.barrierType == UpIn) && barrierActivated) {
-                payoff = fmaxf(option.strike - spot, 0.0f);
+        else {
+            // Calculate payoff at maturity for European options or if no early exercise occurred for American options
+            if (option.optionType == Call) {
+                if ((option.barrierType == DownIn || option.barrierType == UpIn) && barrierActivated) {
+                    payoff = fmaxf(spot - option.strike, 0.0f);
+                }
+                else if ((option.barrierType == DownOut || option.barrierType == UpOut) && !barrierActivated) {
+                    payoff = fmaxf(spot - option.strike, 0.0f);
+                }
             }
-            else if ((option.barrierType == DownOut || option.barrierType == UpOut) && !barrierActivated) {
-                payoff = fmaxf(option.strike - spot, 0.0f);
+            else if (option.optionType == Put) {
+                if ((option.barrierType == DownIn || option.barrierType == UpIn) && barrierActivated) {
+                    payoff = fmaxf(option.strike - spot, 0.0f);
+                }
+                else if ((option.barrierType == DownOut || option.barrierType == UpOut) && !barrierActivated) {
+                    payoff = fmaxf(option.strike - spot, 0.0f);
+                }
             }
+            payoffs[optionIdx * numPaths + pathIdx] = payoff * expf(-option.rate * option.maturity);
         }
-        payoffs[optionIdx * numPaths + pathIdx] = payoff * expf(-option.rate * option.maturity);
     }
 }
 
@@ -177,9 +185,9 @@ void processBatchOnDevice(int device, int batchStartIdx, int batchEndIdx, int nu
 }
 
 int main() {
-	int numOptions = 1 * 1000000;   // Number of barrier options to price
+	int numOptions = 10 * 1000000;   // Number of barrier options to price
 	int numPaths = 100000;          // Number of paths to simulate for each option
-    int batchSize = 20000;          // Set batch size to reduce memory usage
+    int batchSize = 10000;          // Set batch size to reduce memory usage
 	int numDevices;                 // Number of available CUDA devices
     CUDA_CHECK(cudaGetDeviceCount(&numDevices));
 
