@@ -19,14 +19,14 @@ The Demo constists of two parts:
 
    The option parameter and pricing results are written to a CSV file. Sample 100K and 1M output files are included in the repo.
 
-   The results of the command line program look like this:
-
    ![alt text](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/CreateBarriers.png)
 
 ## 2. Python Jupyter Notebooks 
 
 ### 2.1.  barrier_quick_ml_model_eval.ipynb
 Demonstrates how to train a machine learning models to predict the price of a Barrier Option. For this example Support Vector Machine (SVM), Random Forest and XGBoost GBDT models were initiially evaluated. The XGBoost model was selected for further training and testing. 
+
+   ![alt text](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/QuickModelEvals.png)
 
 ### 2.2.  barrier_xgboost.ipynb
 
