@@ -4,7 +4,7 @@ This a demo of how Barrier Options can be priced using Monte Carlo Simulations r
 
 The Demo constists of two parts:
 
-# 1. CUDA Monte Carlo Simulation for pricing Barrier Options 	 
+## 1. CUDA Monte Carlo Simulation for pricing Barrier Options 	 
    
    The following barrier option types are supported:
 
@@ -36,7 +36,7 @@ XGBoost Gradient Boosted Decision Tree Models were trained using a file of 100K 
 
  ![American Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/AmericanBarriers.png)
 
- ## Further Work
+ ## 3. Further Work
 
  #### 3.1. Option Paramters
  The random option parameters could be chosen more wisely to better represent real world options.
