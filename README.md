@@ -56,13 +56,13 @@ XGBoost Gradient Boosted Decision Tree Models were trained on 10 million barrier
  The random option parameters could be chosen more wisely to better represent real world options.
 
  #### 3.2. Results Analysis
- Further analysis of ML model prediction results.  E.g. Outlier, why are American options predicted better than European options?  There is surely alot that can be done to improve the model accuracy.
+ Further analysis of ML model prediction results.  E.g. Outliers and why are American options predicted better than European options?  There is surely a lot that can be done to improve the model accuracy.
 
  #### 3.3. Hyperparameter tuning
  E.g. Using a grid of heuristic driven search of the XGBoost model hyperparameters to improve accuracy.
 
  ### 3.4. Alternate Models
- More advanced ML models and ensembles could be evaluated.
+ More advanced ML models and ensembles of models could be evaluated.
 
  ### 3.5. Code refinement and optimization
  The code was quickly hacked together as a proof of concept and pretty much all of it could be improved. E.g. The CUDA code could be optimized to run faster, the Python code could be refactored to be more readable and efficient.
