@@ -1,8 +1,8 @@
 # CUDA Barrier Option Pricing & ML Model Training
 
-This a demo of how Barrier Options can be priced using Monte Carlo Simulations running on a cluster of NVidia GPUs.  The option pricing results are then used to train a machine learning models to predict the price of the Barrier Options. The idea being that a trained ML model could be used to price options more quickly than running a Monte Carlo simulation.  Test show an XGBoost Gradient Boosted Decision Tree model can predict more than 400K barrier option prices per second without given much though to optimization.
+This a demo of how Barrier Options can be priced using Monte Carlo Simulations running on a cluster of NVidia GPUs.  The option pricing results are used to train a machine learning models to predict the price of the Barrier Options. The idea being that a trained ML model could be used to price options more quickly than running a Monte Carlo simulation.  Tests show a XGBoost Gradient Boosted Decision Tree model can predict more than 400K barrier option prices per second without given much though to optimization.  Later test investigate using deep learning models using the PyTorch framework.
 
-The Demo constists of two parts:
+The demo constists of two parts:
 
 ## 1. CUDA Monte Carlo Simulation for pricing Barrier Options 	 
    
@@ -17,7 +17,7 @@ The Demo constists of two parts:
 	The main() function in CUDA_MonteCarloOptionPricer.cu is used to drive batch pricing of random portfolios of Barrier Options.
 
 
-   The option parameters and pricing results are written to a CSV file. Sample 100K and 1M output files are included in the repo.
+   The option parameters and pricing results are written to a CSV file. Sample 100K and 1M output files are included in the repo.  A 10M barrier options file was generated and used to train the final versions of the ML models.
 
    ![Create Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/CreateBarriers.png)
 
@@ -30,7 +30,7 @@ Demonstrates how to train a machine learning models to predict the price of Barr
 
 ### 2.2.  barrier_xgboost.ipynb
 
-XGBoost Gradient Boosted Decision Tree Models were trained using a file of 100K to 10 million barrier options. The XGBoost model is then used to predict the price.  Model accuracy statistics are calculated, Mathpoltlib and Ploty charts are then used to visualize the model performance.
+XGBoost Gradient Boosted Decision Tree Models were trained on 10 million barrier options. Model accuracy statistics are calculated, Mathpoltlib and Ploty charts are then used to visualize the model performance.
  
  ![European Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/EuropeanBarriers.png)
 
@@ -38,7 +38,7 @@ XGBoost Gradient Boosted Decision Tree Models were trained using a file of 100K 
 
  ### 2.3.  barrier_dl_pytorch.ipynb
 
- First attempt at using PyTorch to train a Deep Learning model to predict the price of Barrier Options. The model was trained using a file of 100K to 10 million barrier options.
+ First attempt at using PyTorch to train a Deep Learning model to predict the price of Barrier Options. 
 
  ![PyTorch Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/PyTorchBarriers.png)
 
