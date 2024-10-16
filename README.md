@@ -36,6 +36,18 @@ XGBoost Gradient Boosted Decision Tree Models were trained using a file of 100K 
 
  ![American Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/AmericanBarriers.png)
 
+ ### 2.3.  barrier_dl_pytorch.ipynb
+
+ First attempt at using PyTorch to train a Deep Learning model to predict the price of Barrier Options. The model was trained using a file of 100K to 10 million barrier options.
+
+ ![PyTorch Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/PyTorchBarriers.png)
+
+ ### 2.4.  barrier_dl_pytorch_enhanced.ipynb
+ 
+  ![PyTorch Barriers Enhanced](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/PyTorchBarriersEnhanced.png)
+
+ Updated model architecture and multi-gpu training.
+
  ## 3. Further Work
 
  #### 3.1. Option Paramters
@@ -48,10 +60,13 @@ XGBoost Gradient Boosted Decision Tree Models were trained using a file of 100K 
  E.g. Using a grid of heuristic driven search of the XGBoost model hyperparameters to improve accuracy.
 
  ### 3.4. Alternate Models
- More advanced ML models could be evaluated. E.g. Neural Networks
+ More advanced ML models and ensembles could be evaluated.
 
  ### 3.5. Code refinement and optimization
  The code was quickly hacked together as a proof of concept and pretty much all of it could be improved. E.g. The CUDA code could be optimized to run faster, the Python code could be refactored to be more readable and efficient.
+
+ ### 3.6. Sources of errors
+ BarrierType, ExerciseType, OptionType are encoded as integers.  This could be a source of errors.  A better approach would be to use a one-hot encoding, however the XGBoost model seems to handle this well.  One-hot encoding is used in the PyTorch models.
 
 
 
