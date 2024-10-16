@@ -43,10 +43,10 @@ XGBoost Gradient Boosted Decision Tree Models were trained using a file of 100K 
  ![PyTorch Barriers](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/PyTorchBarriers.png)
 
  ### 2.4.  barrier_dl_pytorch_enhanced.ipynb
+
+  Updated model architecture and multi-gpu training.
  
   ![PyTorch Barriers Enhanced](https://github.com/brendanbignell/CUDA_MonteCarloOptionPricer/blob/master/images/PyTorchBarriersEnhanced.png)
-
- Updated model architecture and multi-gpu training.
 
  ## 3. Further Work
 
