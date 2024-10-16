@@ -2,7 +2,7 @@
 
 # CUDA Barrier Option Pricing & ML Model Training
 
-This a demo of how Barrier Options can be priced using Monte Carlo Simulations running on a cluster of NVidia GPUs.  The option pricing results are used to train a machine learning models to predict the price of the Barrier Options. The idea being that a trained ML model could be used to price options more quickly than running a Monte Carlo simulation.  Tests show a XGBoost Gradient Boosted Decision Tree model can predict more than 400K barrier option prices per second without given much though to optimization.  Later test investigate using deep learning models using the PyTorch framework.
+This a demo of how Barrier Options can be priced using Monte Carlo Simulations running on a cluster of NVidia GPUs.  The option pricing results are used to train a machine learning models to predict the price of the Barrier Options. The idea being that a trained ML model could be used to price options more quickly than running a Monte Carlo simulation.  Tests show a XGBoost Gradient Boosted Decision Tree model can predict more than 400K barrier option prices per second without given much though to optimization.  Later tests investigate using deep learning models using the PyTorch framework.
 
 The demo constists of two parts:
 
@@ -70,5 +70,8 @@ XGBoost Gradient Boosted Decision Tree Models were trained on 10 million barrier
  ### 3.6. Sources of errors
  BarrierType, ExerciseType, OptionType are encoded as integers.  This could be a source of errors.  A better approach would be to use a one-hot encoding, however the XGBoost model seems to handle this well.  One-hot encoding is used in the PyTorch models.
 
+ ### 3.7. Feature Engineering
+ The current model uses the option parameters as input features.  Other features could be engineered from the option parameters to improve model accuracy.  E.g. moneyness.
 
+Rather than only using the average of barrier option pricing paths to calculate the price we could also capture a bunch of statistics such as the stdev of the price paths, quantiles etc. and use these as additional model features.
 
