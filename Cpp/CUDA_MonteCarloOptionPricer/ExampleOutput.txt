@@ -1,0 +1,28 @@
+Creating 100000000 random barrier options
+
+Summary of Option Parameters and Calculated Prices (First 20):
+    Option      Type    Strike   Barrier  Maturity      Spot      Rate     Volatility  Exercise Type   Barrier Type          Price
+         1      Call        41      8466   7.34018      6498     0.015         0.0709       European           UpIn        2329.65
+         2      Call      4462      5705   7.04723      3279    0.0811         0.0952       American          UpOut        8.99154
+         3       Put      4827      5436   8.67077      4603    0.0899         0.0153       European         DownIn              0
+         4      Call      8715      9717    4.4627      5447    0.0705         0.0757       American           UpIn        2.97229
+         5       Put      5665      6297   6.63381      9894    0.0675         0.0788       American           UpIn              0
+         6       Put      4664      5140   1.10883      8251    0.0862         0.0522       European         DownIn              0
+         7      Call        35      2858   3.87953      9741    0.0502         0.0778       American         DownIn        9707.44
+         8       Put      1842       288   2.41478      9040    0.0934         0.0245       European         DownIn              0
+         9       Put      5889      6729   6.71321      5349    0.0992          0.007       European        DownOut              0
+        10      Call      2622      4082   4.62423      8755    0.0829         0.0962       American         DownIn        6135.05
+        11       Put      6943      2436    7.4141      1322    0.0532         0.0517       European           UpIn        197.414
+        12      Call      6540      4833   5.17728      4639    0.0629         0.0682       American           UpIn        5.55484
+        13       Put      1670      2384   3.74538      8743    0.0898         0.0053       American           UpIn              0
+        14       Put      5572      5097   5.20192      3984    0.0277         0.0152       American         DownIn        1587.33
+        15      Call      3653      5573   1.03491      2051    0.0323         0.0149       European        DownOut              0
+        16       Put      3430      1104    2.6475      8006    0.0326         0.0442       American          UpOut              0
+        17      Call      4944      8909   8.17248      9758    0.0197          0.057       European           UpIn        5543.72
+        18       Put      3029      6412   9.84805       900    0.0559         0.0744       European          UpOut        847.828
+        19       Put      7622       535   8.98836      6483    0.0568         0.0037       European           UpIn              0
+        20      Call       833      9374  0.167009      4596    0.0998         0.0321       European          UpOut        3776.91
+Total Time Elapsed: 14674 seconds
+Options Priced per Second: 6814.79  (100000 path each)
+Writing results to CSV file...
+Done!
