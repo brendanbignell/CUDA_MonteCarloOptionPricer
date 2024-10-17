@@ -4,7 +4,7 @@
 
 This a demo of how Barrier Options can be priced using Monte Carlo Simulations running on a cluster of NVidia GPUs.  The option pricing results are used to train a machine learning models to predict the price of the Barrier Options. The idea being that a trained ML model could be used to price options more quickly than running a Monte Carlo simulation.  Tests show a XGBoost Gradient Boosted Decision Tree model can predict more than 400K barrier option prices per second without given much though to optimization.  Later tests investigate using deep learning models using the PyTorch framework.
 
-Note: Not much effort ws taken to validate the calculated option prices.  The main goal was to generate a large dataset of barrier option prices to train the ML models and understand CUDA better.
+Note: Not much effort was taken to validate the calculated prices.  The main goal was to generate a large dataset of barrier option prices to train ML models and understand CUDA better.
 
 The demo constists of two parts:
 
