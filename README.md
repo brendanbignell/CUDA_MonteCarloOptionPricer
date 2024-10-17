@@ -73,7 +73,7 @@ XGBoost Gradient Boosted Decision Tree Models were trained on 10 million barrier
  BarrierType, ExerciseType, OptionType are encoded as integers.  However only BarrierType has more than two unique values and should be one-hot encoded, however some models such as XGBoost do not require this. One-hot encoding is used in the PyTorch models.
 
  ### 3.7. Feature Engineering
- The current model uses the option parameters as input features.  Other features could be engineered from the option parameters to improve model accuracy.  E.g. Moneyness.
+ The current model uses the option parameters as input features.  Other features could be engineered from the option parameters to improve model accuracy.  E.g. Moneyness.  Features such as initial option greeks could be calculated and used as input features, but I suspect these would not be useful as they can change dramatically over the life of the option.
 
-Rather than only using the average of barrier option pricing paths to calculate the price we could also capture a bunch of statistics such as the stdev of the price paths, quantiles etc. and use these as additional model features.
+Rather than only using the average of barrier option pricing paths to calculate the price we could also capture a bunch of statistics such as the stdev of the price paths, quantiles etc. and use these as additional model features.  Perhaps these statistics could be used to measure the confidence of the price.
 
